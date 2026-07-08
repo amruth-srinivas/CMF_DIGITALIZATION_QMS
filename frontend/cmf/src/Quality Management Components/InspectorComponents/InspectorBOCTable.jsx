@@ -559,7 +559,7 @@ const InspectorBOCTable = ({
               {selectedIds.length} selected
             </Tag>
           )}
-          {measureMode && (
+          {measureMode && !operatorMeasureMode && (
             <Space size={4}>
               <Button size="small" type="dashed" onClick={handleAddColumn} style={{ fontSize: 10, height: 22, padding: '0 8px' }}>+ Add Column</Button>
               <Button size="small" type="dashed" danger onClick={handleRemoveColumn} disabled={measurementCount <= 1} style={{ fontSize: 10, height: 22, padding: '0 8px' }}>- Remove Column</Button>
@@ -589,7 +589,7 @@ const InspectorBOCTable = ({
               Set instrument{editableSelectedCount > 1 ? ` (${editableSelectedCount})` : ''}
             </Button>
           )}
-          {typeof onDeleteSelected === 'function' && !planEditLocked && <Button size="small" danger disabled={!selectedIds.length} onClick={onDeleteSelected} style={{ fontSize: '9px' }}>Delete</Button>}
+          {typeof onDeleteSelected === 'function' && !planEditLocked && !operatorMeasureMode && <Button size="small" danger disabled={!selectedIds.length} onClick={onDeleteSelected} style={{ fontSize: '9px' }}>Delete</Button>}
           <Popover content={filterContent} title="Filter" trigger="click" placement="bottomRight"><Button size="small" type={filterActive ? 'primary' : 'text'} icon={<FilterOutlined style={{ fontSize: 14, color: filterActive ? undefined : '#64748b' }} />} /></Popover>
         </Space>
       </div>

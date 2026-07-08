@@ -306,22 +306,24 @@ const InspectorSidebar = ({
           <GroupDivider />
 
           {!operatorRestricted && (
-            <SidebarItemRaster
-              staticSrc={iconBrainPng}
-              animatedSrc={iconBrainGif}
-              label="Auto Balloon"
-              disabled={autoBalloonDisabled || planEditLocked}
-              onClick={autoBalloonDisabled || planEditLocked ? undefined : onAutoBalloon}
-            />
+            <>
+              <SidebarItemRaster
+                staticSrc={iconBrainPng}
+                animatedSrc={iconBrainGif}
+                label="Auto Balloon"
+                disabled={autoBalloonDisabled || planEditLocked}
+                onClick={autoBalloonDisabled || planEditLocked ? undefined : onAutoBalloon}
+              />
+              <SidebarItemRaster
+                staticSrc={iconBinJpg}
+                animatedSrc={iconBinGif}
+                label="Clear All"
+                danger
+                onClick={onClearAll}
+                disabled={clearAllDisabled || planEditLocked}
+              />
+            </>
           )}
-          <SidebarItemRaster
-            staticSrc={iconBinJpg}
-            animatedSrc={iconBinGif}
-            label="Clear All"
-            danger
-            onClick={onClearAll}
-            disabled={clearAllDisabled || planEditLocked}
-          />
         </div>
       </div>
     </>
