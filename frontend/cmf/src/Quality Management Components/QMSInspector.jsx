@@ -739,6 +739,18 @@ const QMSInspector = () => {
     return () => window.removeEventListener('keydown', onKey);
   }, [selectedRowIds, handleDeleteSelectedRows, bocEditLocked]);
 
+  useEffect(() => {
+    const handleEscapeKey = (e) => {
+      if (e.key === 'Escape' || e.key === 'Esc') {
+        const t = e.target;
+        if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+        setActiveTool('pan');
+      }
+    };
+    window.addEventListener('keydown', handleEscapeKey);
+    return () => window.removeEventListener('keydown', handleEscapeKey);
+  }, []);
+
   const balloonOverlays = useMemo(() => buildBalloonOverlaysFromBocRows(bocDisplay), [bocDisplay]);
 
   const interactiveBalloons = useMemo(() => {
@@ -1190,9 +1202,48 @@ const QMSInspector = () => {
     setPdfRotation(0);
   }, []);
 
-  const handleAutoBalloon = useCallback(() => {
-    message.info('Auto Balloon is not connected yet — balloon numbering from geometry will run here.');
-  }, [message]);
+  const handleAutoBalloon = useCallback(
+    async () => {
+      if (bocEditLocked) {
+        message.warning('Plan is confirmed. Characteristics cannot be changed.');
+        return;
+      }
+      if (!documentId || !partId) {
+        message.warning('Missing document or part for auto ballooning.');
+        return;
+      }
+      setSaving(true);
+      try {
+        const res = await axios.post(`${QUALITY_API_BASE_URL}/pdf-annotation/process-dimensions`, {
+          part_id: Number(partId),
+          pdf_id: String(documentId),
+          bounding_box: {
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 0,
+            page: 1,
+          },
+          scale_factor: 1.0,
+          pdf_content_type: 'normal',
+        });
+        await onDetectionComplete(res.data);
+        const n = res.data?.count ?? 0;
+        if (n > 0) {
+          message.success(`Successfully auto-ballooned ${n} characteristic(s).`);
+        } else {
+          message.info('No dimensions found on this drawing.');
+        }
+      } catch (err) {
+        console.error(err);
+        const detail = err.response?.data?.detail;
+        message.error(typeof detail === 'string' ? detail : err.message || 'Auto ballooning failed');
+      } finally {
+        setSaving(false);
+      }
+    },
+    [bocEditLocked, documentId, partId, onDetectionComplete, message]
+  );
 
   const handleClearAll = useCallback(() => {
     if (bocEditLocked) {

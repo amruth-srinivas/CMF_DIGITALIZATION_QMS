@@ -190,7 +190,10 @@ def _process_dimensions_via_autoballoon(
     if not autoballoon_service.is_pipeline_available():
         return None
 
-    user_region = [region["x"], region["y"], region["width"], region["height"]]
+    if region and (region.get("width", 0) <= 0 or region.get("height", 0) <= 0):
+        user_region = None
+    else:
+        user_region = [region["x"], region["y"], region["width"], region["height"]]
     try:
         pipeline_result = autoballoon_service.run_pipeline(
             str(file_path),
@@ -623,6 +626,12 @@ async def process_dimensions(request: ProcessDimensionsRequest, db: Session = De
                     if zone_label:
                         dim["zone"] = zone_label
             return pipeline_payload
+
+        if region.get("width", 0) <= 0 or region.get("height", 0) <= 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Autoballoon pipeline failed or returned no dimensions for the page."
+            )
         
         # Step 1: Extract text (PaddleOCR first, PyMuPDF fallback)
         logger.info("Step 1: Extracting text (legacy hybrid flow)...")
