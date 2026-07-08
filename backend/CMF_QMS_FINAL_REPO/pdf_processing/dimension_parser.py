@@ -282,12 +282,18 @@ class DimensionParser:
         if text in ['+', '-']:
             return False
 
-        # Check for chamfer text (numeric chamfer pattern with X and degrees).
-        # We deliberately avoid treating a standalone 'CHAMFER' word (with no
-        # numbers) as a dimensional value; only patterns that actually contain
-        # numeric chamfer data should be recognized here.
-        chamfer_pattern = re.search(r'\d+.*x.*\d+.*°', text_original, re.IGNORECASE)
-        if chamfer_pattern:
+        # Check for chamfer text. Matches:
+        #  - Numeric chamfer pattern: "0.5 X 45°" (any degree-like char)
+        #  - CHAMFER keyword alongside a number (handles multi-line OCR merge)
+        # NOTE: Must NOT use raw string here — \u escapes need to be interpreted.
+        _DEGREE_RE = '[\u00b0\u00ba\u02da\u2218\u25e6]'  # °, º, ˚, ∘, ◦
+        chamfer_pattern = re.search(
+            '\\d+\\.?\\d*\\s*[xX\u00d7]\\s*\\d+\\.?\\d*\\s*' + _DEGREE_RE,
+            text_original, re.IGNORECASE
+        )
+        # Also accept if 'chamfer' keyword appears with at least one digit
+        has_chamfer_kw = 'chamfer' in text_original.lower() and bool(re.search(r'\d', text_original))
+        if chamfer_pattern or has_chamfer_kw:
             return True
 
         # Check if it's a tolerance value starting with + or -
@@ -374,14 +380,15 @@ class DimensionParser:
         # Check for Chamfer first (most specific)
         if 'chamfer' in text_lower:
             return "Chamfer"
-        
-        # Check for chamfer pattern: number X number followed by degree symbol
-        # Pattern like "0.5 X 45°" or "0.5X45°"
-        if re.search(r'\d+\.?\d*\s*[xX×]\s*\d+\.?\d*\s*°', text, re.IGNORECASE):
+
+        # Check for chamfer pattern: number X number followed by degree-like symbol
+        # NOTE: Must NOT use raw string — \u escapes need to be interpreted.
+        _DEG = '[\u00b0\u00ba\u02da\u2218\u25e6]'  # °, º, ˚, ∘, ◦
+        if re.search('\\d+\\.?\\d*\\s*[xX\u00d7]\\s*\\d+\\.?\\d*\\s*' + _DEG, text, re.IGNORECASE):
             return "Chamfer"
-        
-        # Check for X pattern with degrees (common chamfer notation)
-        if 'x' in text_lower and '°' in text:
+
+        # Broad fallback: any 'X' between two numbers with any degree-like char
+        if re.search(r'\d', text) and re.search(r'[xX]', text) and re.search('[\u00b0\u00ba\u02da\u2218\u25e6°]', text):
             return "Chamfer"
 
         # Check for Diameter (symbols: ø, Ø, ∅, ⌀ - at start or anywhere; or "DIA"/"diameter" in text)
@@ -445,31 +452,30 @@ class DimensionParser:
             lower_tol = ""
             dim_type = "Length"  # default type
 
-            # Check for chamfer first. We only treat it as a chamfer
-            # dimension if there is either an explicit numeric chamfer
-            # pattern (e.g. "0.5 X 45°") or the word CHAMFER appears
-            # together with at least one digit. This avoids creating a
-            # separate dimension row for a standalone "CHAMFER" label.
-            chamfer_numeric_pattern = re.search(r'\d+\.?\d*\s*[xX×]\s*\d+\.?\d*\s*°', text, re.IGNORECASE)
+            # Check for chamfer first. Handles:
+            #  - "0.5 X 45° TYP." → nominal "0.5 X 45"
+            #  - "CHAMFER\n0.5 X 45° TYP." (multi-line OCR merge)
+            # NOTE: Must NOT use raw string here — \u escapes need to be interpreted.
+            _DEG = '[\u00b0\u00ba\u02da\u2218\u25e6]'  # °, º, ˚, ∘, ◦
+            _CHAMFER_PAT = re.compile(
+                '(\\d+\\.?\\d*)\\s*[xX\u00d7]\\s*(\\d+\\.?\\d*)\\s*' + _DEG,
+                re.IGNORECASE
+            )
+            chamfer_numeric_pattern = _CHAMFER_PAT.search(text)
             has_chamfer_word_with_number = 'chamfer' in text.lower() and re.search(r'\d', text)
             if chamfer_numeric_pattern or has_chamfer_word_with_number:
-                # Extract chamfer pattern like "0.5 X 45°" or "0.5X45°" or "0.5 X 45° TYP."
-                chamfer_match = re.search(r'(\d+\.?\d*)\s*[xX×]\s*(\d+\.?\d*)\s*°', text, re.IGNORECASE)
+                chamfer_match = _CHAMFER_PAT.search(text)
                 if chamfer_match:
                     length_part = chamfer_match.group(1)
                     angle_part = chamfer_match.group(2)
-                    # Check if there's additional text after the chamfer pattern (like TYP.)
-                    after_match = chamfer_match.end()
-                    suffix = text[after_match:].strip() if after_match < len(text) else ""
-                    if suffix:
-                        nominal_value = f"{length_part} X {angle_part}° {suffix}"
-                    else:
-                        nominal_value = f"{length_part} X {angle_part}°"
+                    # Nominal = "0.5 X 45" — clean numbers, no degree sign or TYP suffix
+                    nominal_value = f"{length_part} X {angle_part}"
                     dim_type = "Chamfer"
                     return dim_type, "0", "0", nominal_value
-                # If no match but has chamfer keyword, keep the text
+                # Chamfer keyword with number but no X-angle pattern → keep numeric part
                 if 'chamfer' in text.lower():
-                    nominal_value = text_original
+                    num_match = re.search(r'(\d+\.?\d*)', text)
+                    nominal_value = num_match.group(1) if num_match else text_original
                     dim_type = "Chamfer"
                     return dim_type, "0", "0", nominal_value
 

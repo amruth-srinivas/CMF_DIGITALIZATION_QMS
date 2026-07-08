@@ -97,7 +97,41 @@ class DimParser:
                 base.update(extra)
             return base
 
+        # ── Chamfer ──────────────────────────────────────────────────────
+        # NOTE: Must NOT use raw string here — \u escapes need to be interpreted.
+        # Degree-symbol variants from OCR: °, º, ˚, ∘, ◦
+        _DEG = '[\u00b0\u00ba\u02da\u2218\u25e6]'
+        _CHAMFER_PAT = re.compile(
+            '(\\d+\\.?\\d*)\\s*[xX\u00d7]\\s*(\\d+\\.?\\d*)\\s*' + _DEG,
+            re.IGNORECASE
+        )
+        chamfer_numeric_pattern = _CHAMFER_PAT.search(raw_t)
+        has_chamfer_word_with_number = 'chamfer' in raw_t.lower() and re.search(r'\d', raw_t)
+        if chamfer_numeric_pattern or has_chamfer_word_with_number:
+            dim_type = "Chamfer"
+            final_type = f"{dim_type}{type_suffix}"
+
+            # Strip CHAMFER keyword to get the value part
+            clean_chamfer_text = re.sub(r'\bchamfer\b', '', raw_t, flags=re.IGNORECASE).strip()
+            clean_chamfer_text = ' '.join(clean_chamfer_text.split())
+
+            chamfer_match = _CHAMFER_PAT.search(clean_chamfer_text)
+            if chamfer_match:
+                length_part = chamfer_match.group(1)
+                angle_part = chamfer_match.group(2)
+                # Nominal = "0.5 X 45" — clean numbers only, no degree or TYP suffix
+                nominal_value = f"{length_part} X {angle_part}"
+                return _result(nominal_value, min_tol="", max_tol="")
+
+            # Chamfer keyword with a number but no X-angle pattern
+            if 'chamfer' in raw_t.lower():
+                num_match = re.search(r'(\d+\.?\d*)', clean_chamfer_text)
+                nominal_value = num_match.group(1) if num_match else raw_t.strip()
+                return _result(nominal_value, min_tol="", max_tol="")
+
+
         # ── Thread ───────────────────────────────────────────────────────
+
         if dim_type == "Thread":
             m = (re.search(r'(M\d+\.?\d*[xX×]\d+\.?\d*(?:-\d+[A-Za-z]+)?)',
                            raw_t, re.IGNORECASE) or
