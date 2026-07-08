@@ -147,7 +147,7 @@ export function buildReportPayload({
     projectNo: String(orderId),
     drgNo: partNumber || '',
     projectName: projectName || '',
-    assembly: assembly || 'Main',
+    assembly: '',
   };
 
   if (isConsolidated) {
@@ -482,7 +482,7 @@ export function computeMaxDataRowsPerPage(includeFooter, { singleHeaderRow = fal
   const headerBudget = singleHeaderRow ? 8 : headers;
   const fixed = banner + meta + headerBudget + (includeFooter ? footer : 0);
   const raw = (pageContentHeight - fixed) / dataRow;
-  const safety = includeFooter ? 0.88 : 0.92;
+  const safety = includeFooter ? 0.94 : 0.95;
   return Math.max(1, Math.floor(raw * safety));
 }
 
