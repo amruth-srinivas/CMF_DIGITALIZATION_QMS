@@ -140,7 +140,10 @@ export function buildReportPayload({
   const shared = {
     reportNo: `RPT-${orderId}-${opNo}`,
     componentTitle: partName || '',
-    date: new Date().toLocaleDateString(),
+    date: (() => {
+      const today = new Date();
+      return `${today.getDate()}/${today.getMonth() + 1}/${today.getFullYear()}`;
+    })(),
     projectNo: String(orderId),
     drgNo: partNumber || '',
     projectName: projectName || '',
