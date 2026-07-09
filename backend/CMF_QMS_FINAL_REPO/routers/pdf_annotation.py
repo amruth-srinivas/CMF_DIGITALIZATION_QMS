@@ -612,10 +612,38 @@ async def process_dimensions(request: ProcessDimensionsRequest, db: Session = De
             str(file_path), page_number, region
         )
         if pipeline_payload is not None:
+            from DB.models import Note
+            existing_notes = db.query(Note).filter(
+                Note.part_id == request.part_id,
+                Note.document_id == document_id
+            ).all()
+
+            def _is_inside_any_note(dim_rect: dict, notes: list, page: int) -> bool:
+                if not dim_rect:
+                    return False
+                dim_cx = dim_rect["x"] + dim_rect["width"] / 2
+                dim_cy = dim_rect["y"] + dim_rect["height"] / 2
+                for note in notes:
+                    note_page = note.page if note.page is not None else 1
+                    if note_page != page:
+                        continue
+                    if note.x is None or note.y is None or note.width is None or note.height is None:
+                        continue
+                    if (note.x <= dim_cx <= note.x + note.width and
+                        note.y <= dim_cy <= note.y + note.height):
+                        return True
+                return False
+
+            filtered_dimensions = []
             for dim in pipeline_payload.get("dimensions", []):
                 dim["page"] = page_number + 1
                 dim_bbox = dim.get("bbox")
                 dim_region = _region_from_quad(dim_bbox) if isinstance(dim_bbox, list) else None
+                
+                if dim_region and _is_inside_any_note(dim_region, existing_notes, page_number + 1):
+                    logger.info(f"Skipping auto-balloon for dimension inside note box: {dim.get('text')} at {dim_region}")
+                    continue
+
                 if dim_region:
                     zone_label = _detect_zone_label(
                         pdf_path=str(file_path),
@@ -625,6 +653,36 @@ async def process_dimensions(request: ProcessDimensionsRequest, db: Session = De
                     )
                     if zone_label:
                         dim["zone"] = zone_label
+                filtered_dimensions.append(dim)
+
+            pipeline_payload["dimensions"] = filtered_dimensions
+            pipeline_payload["count"] = len(filtered_dimensions)
+            pipeline_payload["text_dimensions"] = len(filtered_dimensions)
+            pipeline_payload["gdt_dimensions"] = sum(
+                1 for d in filtered_dimensions if "gdt" in str(d.get("dimension_type", "")).lower()
+            )
+            pipeline_payload["dimension_parsing"] = filtered_dimensions
+
+            # Filter text_detections
+            filtered_text_detections = []
+            for det in pipeline_payload.get("text_detections", []):
+                det_bbox = det.get("box")
+                det_region = _region_from_quad(det_bbox) if isinstance(det_bbox, list) else None
+                if det_region and _is_inside_any_note(det_region, existing_notes, page_number + 1):
+                    continue
+                filtered_text_detections.append(det)
+            pipeline_payload["text_detections"] = filtered_text_detections
+
+            # Filter gdt_detections
+            filtered_gdt_detections = []
+            for det in pipeline_payload.get("gdt_detections", []):
+                det_bbox = det.get("box")
+                det_region = _region_from_quad(det_bbox) if isinstance(det_bbox, list) else None
+                if det_region and _is_inside_any_note(det_region, existing_notes, page_number + 1):
+                    continue
+                filtered_gdt_detections.append(det)
+            pipeline_payload["gdt_detections"] = filtered_gdt_detections
+
             return pipeline_payload
 
         if region.get("width", 0) <= 0 or region.get("height", 0) <= 0:
