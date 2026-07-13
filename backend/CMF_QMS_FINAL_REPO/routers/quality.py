@@ -774,6 +774,66 @@ def delete_notes_for_part(
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
+@router.get("/instruments/sub-categories", response_model=List[str])
+def list_instrument_sub_categories(
+    category: str = Query("Instruments", description="Parent category name, e.g. Instruments"),
+    db: Session = Depends(get_db),
+):
+    """
+    Fast path for Set Instrument / Stamp / Edit modals.
+    Returns distinct sub-category names only — not the full tools inventory.
+    """
+    cat_name = (category or "Instruments").strip()
+    if not cat_name:
+        cat_name = "Instruments"
+
+    # Prefer inventory.categories tree (tiny table) over scanning tools_list.
+    parents = (
+        db.query(Category.id)
+        .filter(func.lower(Category.name) == cat_name.lower())
+        .all()
+    )
+    parent_ids = [pid for (pid,) in parents]
+    names: List[str] = []
+    if parent_ids:
+        rows = (
+            db.query(Category.name)
+            .filter(Category.parent_id.in_(parent_ids))
+            .filter(Category.name.isnot(None))
+            .order_by(Category.name.asc())
+            .all()
+        )
+        names = [n.strip() for (n,) in rows if n and str(n).strip()]
+
+    # Fallback: distinct sub-categories actually used on tools rows
+    if not names:
+        cat = aliased(Category)
+        sub = aliased(Category)
+        rows = (
+            db.query(sub.name)
+            .select_from(ToolsListModel)
+            .join(cat, ToolsListModel.category_id == cat.id)
+            .join(sub, ToolsListModel.sub_category_id == sub.id)
+            .filter(func.lower(cat.name) == cat_name.lower())
+            .filter(sub.name.isnot(None))
+            .distinct()
+            .order_by(sub.name.asc())
+            .all()
+        )
+        names = [n.strip() for (n,) in rows if n and str(n).strip()]
+
+    # De-dupe while preserving sort
+    seen = set()
+    out: List[str] = []
+    for n in names:
+        key = n.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(n)
+    return out
+
+
 @router.get("/instruments", response_model=List[ToolsList])
 def list_instruments(
     category: Optional[str] = Query(None),

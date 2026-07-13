@@ -24,7 +24,11 @@ class MasterBocBulkCreate(BaseModel):
 
 
 class MasterBocUpdate(BaseModel):
+    nominal: Optional[str] = None
+    uppertol: Optional[float] = None
+    lowertol: Optional[float] = None
     zone: Optional[str] = None
+    dimension_type: Optional[str] = None
     measured_instrument: Optional[str] = None
 
 

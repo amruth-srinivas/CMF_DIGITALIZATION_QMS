@@ -1,8 +1,10 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { Table, Tag, Typography, Space, Button, Empty, Popover, Select, Divider, Input, message } from 'antd';
-import { FilterOutlined, UnorderedListOutlined, EditOutlined, LeftOutlined, RightOutlined } from '@ant-design/icons';
+import { Table, Tag, Typography, Space, Button, Empty, Popover, Select, Divider, Input, message, Menu } from 'antd';
+import { FilterOutlined, UnorderedListOutlined, EditOutlined, LeftOutlined, RightOutlined, ToolOutlined } from '@ant-design/icons';
 import SetInstrumentModal from './SetInstrumentModal';
 import UsedInstrumentModal from './UsedInstrumentModal';
+import EditCharacteristicModal from './EditCharacteristicModal';
+import { fetchInstrumentSubCategories } from './instrumentOptions';
 
 const { Text } = Typography;
 
@@ -102,6 +104,7 @@ const InspectorBOCTable = ({
   measureMode = false,
   onMeasurePatch,
   onSetInstrument,
+  onEditCharacteristic,
   onSetUsedInstrument,
   operatorMeasureMode = false,
   onQuantityChange,
@@ -114,6 +117,12 @@ const InspectorBOCTable = ({
   useEffect(() => {
     setQtyInput(String(quantityNo));
   }, [quantityNo]);
+
+  // Prefetch instrument sub-categories so Set instrument / Edit open instantly
+  useEffect(() => {
+    if (operatorMeasureMode || typeof onSetInstrument !== 'function') return;
+    void fetchInstrumentSubCategories().catch(() => {});
+  }, [operatorMeasureMode, onSetInstrument]);
 
   const handleQtySubmit = () => {
     const val = (qtyInput || '').trim();
@@ -146,6 +155,10 @@ const InspectorBOCTable = ({
   const [usedInstrumentRecord, setUsedInstrumentRecord] = useState(null);
   const [usedInstrumentSubCategory, setUsedInstrumentSubCategory] = useState('');
   const [usedInstrumentSaving, setUsedInstrumentSaving] = useState(false);
+  const [editModalOpen, setEditModalOpen] = useState(false);
+  const [editModalRecord, setEditModalRecord] = useState(null);
+  const [editSaving, setEditSaving] = useState(false);
+  const [contextMenu, setContextMenu] = useState({ open: false, x: 0, y: 0, record: null });
 
   const getTableScrollEl = useCallback(() => {
     const wrap = tableScrollRef.current;
@@ -509,11 +522,97 @@ const InspectorBOCTable = ({
     }
   }, [instrumentModalRows, onSetInstrument]);
 
+  const canEditRow = useCallback((record) => {
+    if (planEditLocked || measureMode || operatorMeasureMode) return false;
+    return typeof onEditCharacteristic === 'function' && Boolean(record?.id);
+  }, [planEditLocked, measureMode, operatorMeasureMode, onEditCharacteristic]);
+
+  const openEditModal = useCallback((record) => {
+    if (!record) return;
+    if (!canEditRow(record)) {
+      if (planEditLocked) message.warning('Plan is confirmed. Characteristics cannot be edited.');
+      else if (measureMode) message.warning('Switch to Plan to edit characteristic values.');
+      else message.warning('This row cannot be edited.');
+      return;
+    }
+    if (!selectedIds.includes(record.id)) {
+      onSelectedIdsChange?.([record.id], record.id);
+    }
+    setEditModalRecord(record);
+    setEditModalOpen(true);
+  }, [canEditRow, planEditLocked, measureMode, selectedIds, onSelectedIdsChange]);
+
+  const handleEditSave = useCallback(async (values) => {
+    if (!editModalRecord || !onEditCharacteristic) return;
+    setEditSaving(true);
+    try {
+      await onEditCharacteristic(editModalRecord, values);
+      message.success('Characteristic updated.');
+      setEditModalOpen(false);
+      setEditModalRecord(null);
+    } finally {
+      setEditSaving(false);
+    }
+  }, [editModalRecord, onEditCharacteristic]);
+
   const handleRowContextMenu = useCallback((record, e) => {
     e.preventDefault();
+    e.stopPropagation();
     if (operatorMeasureMode) return;
-    openInstrumentModal(record);
-  }, [openInstrumentModal, operatorMeasureMode]);
+    if (!selectedIds.includes(record.id)) {
+      onSelectedIdsChange?.([record.id], record.id);
+    }
+    setContextMenu({
+      open: true,
+      x: e.clientX,
+      y: e.clientY,
+      record,
+    });
+  }, [operatorMeasureMode, selectedIds, onSelectedIdsChange]);
+
+  const contextMenuItems = useMemo(() => {
+    const record = contextMenu.record;
+    const instrumentOk = record && canEditInstrument(record);
+    const editOk = record && canEditRow(record);
+    return [
+      {
+        key: 'set-instrument',
+        icon: <ToolOutlined />,
+        label: 'Set instrument',
+        disabled: !instrumentOk,
+      },
+      {
+        key: 'edit',
+        icon: <EditOutlined />,
+        label: 'Edit',
+        disabled: !editOk,
+      },
+    ];
+  }, [contextMenu.record, canEditInstrument, canEditRow]);
+
+  const handleContextMenuClick = useCallback(({ key }) => {
+    const record = contextMenu.record;
+    setContextMenu((prev) => ({ ...prev, open: false }));
+    if (!record) return;
+    if (key === 'set-instrument') openInstrumentModal(record);
+    if (key === 'edit') openEditModal(record);
+  }, [contextMenu.record, openInstrumentModal, openEditModal]);
+
+  useEffect(() => {
+    if (!contextMenu.open) return;
+    const close = () => setContextMenu((prev) => ({ ...prev, open: false }));
+    const onKey = (e) => { if (e.key === 'Escape') close(); };
+    window.addEventListener('mousedown', close);
+    window.addEventListener('scroll', close, true);
+    window.addEventListener('resize', close);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('mousedown', close);
+      window.removeEventListener('scroll', close, true);
+      window.removeEventListener('resize', close);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [contextMenu.open]);
 
   const handleUsedInstrumentSave = useCallback(async (usedInst) => {
     if (!usedInstrumentRecord || !onSetUsedInstrument) return;
@@ -658,6 +757,37 @@ const InspectorBOCTable = ({
         onOk={handleUsedInstrumentSave}
         confirmLoading={usedInstrumentSaving}
       />
+      <EditCharacteristicModal
+        open={editModalOpen}
+        record={editModalRecord}
+        onCancel={() => {
+          setEditModalOpen(false);
+          setEditModalRecord(null);
+        }}
+        onOk={handleEditSave}
+        confirmLoading={editSaving}
+      />
+      {contextMenu.open ? (
+        <div
+          style={{
+            position: 'fixed',
+            left: contextMenu.x,
+            top: contextMenu.y,
+            zIndex: 1100,
+            boxShadow: '0 6px 16px rgba(0,0,0,0.12)',
+            borderRadius: 8,
+            background: '#fff',
+          }}
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          <Menu
+            selectable={false}
+            items={contextMenuItems}
+            onClick={handleContextMenuClick}
+            style={{ border: 'none', minWidth: 160 }}
+          />
+        </div>
+      ) : null}
     </div>
   );
 };

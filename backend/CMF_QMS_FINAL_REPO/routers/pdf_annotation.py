@@ -190,10 +190,13 @@ def _process_dimensions_via_autoballoon(
     if not autoballoon_service.is_pipeline_available():
         return None
 
-    if region and (region.get("width", 0) <= 0 or region.get("height", 0) <= 0):
-        user_region = None
-    else:
+    region_mode = bool(
+        region and region.get("width", 0) > 0 and region.get("height", 0) > 0
+    )
+    if region_mode:
         user_region = [region["x"], region["y"], region["width"], region["height"]]
+    else:
+        user_region = None
     try:
         pipeline_result = autoballoon_service.run_pipeline(
             str(file_path),
@@ -224,10 +227,40 @@ def _process_dimensions_via_autoballoon(
         x1, y1, x2, y2 = [float(v) for v in flat_bbox[:4]]
         return [[x1, y1], [x2, y1], [x2, y2], [x1, y2]]
 
+    def _center_in_region(quad_or_flat, rx, ry, rw, rh) -> bool:
+        if not quad_or_flat:
+            return False
+        if isinstance(quad_or_flat[0], (list, tuple)):
+            xs = [p[0] for p in quad_or_flat]
+            ys = [p[1] for p in quad_or_flat]
+            cx, cy = (min(xs) + max(xs)) / 2.0, (min(ys) + max(ys)) / 2.0
+        elif len(quad_or_flat) >= 4:
+            cx = (float(quad_or_flat[0]) + float(quad_or_flat[2])) / 2.0
+            cy = (float(quad_or_flat[1]) + float(quad_or_flat[3])) / 2.0
+        else:
+            return False
+        return rx <= cx <= rx + rw and ry <= cy <= ry + rh
+
     for dim in mapped_dimensions:
         bbox = dim.get("bbox")
         if isinstance(bbox, list) and len(bbox) >= 4 and isinstance(bbox[0], (int, float)):
             dim["bbox"] = _flat_bbox_to_quad(bbox)
+
+    # Region select: drop anything whose center is outside the user box
+    # (pipeline should already crop, but this is the API safety net).
+    if region_mode:
+        rx, ry, rw, rh = region["x"], region["y"], region["width"], region["height"]
+        before = len(mapped_dimensions)
+        mapped_dimensions = [
+            d for d in mapped_dimensions
+            if _center_in_region(d.get("bbox"), rx, ry, rw, rh)
+        ]
+        if before != len(mapped_dimensions):
+            logger.info(
+                "Region filter: kept %s/%s dimension(s) inside selection",
+                len(mapped_dimensions),
+                before,
+            )
 
     all_dimensions = mapped_dimensions
     if not all_dimensions:
@@ -238,30 +271,43 @@ def _process_dimensions_via_autoballoon(
         pipeline_result.get("classified_detections", []),
         inv_scale,
     )
+    if region_mode:
+        rx, ry, rw, rh = region["x"], region["y"], region["width"], region["height"]
+        text_results = [
+            t for t in text_results
+            if _center_in_region(t.get("box"), rx, ry, rw, rh)
+        ]
+
     gdt_results = []
     for gdt in pipeline_result.get("gdt_detections", []):
         bbox = gdt.get("bbox")
         if not bbox:
             continue
         scaled = [float(v) * inv_scale for v in bbox]
+        quad = [
+            [scaled[0], scaled[1]],
+            [scaled[2], scaled[1]],
+            [scaled[2], scaled[3]],
+            [scaled[0], scaled[3]],
+        ]
+        if region_mode:
+            rx, ry, rw, rh = region["x"], region["y"], region["width"], region["height"]
+            if not _center_in_region(quad, rx, ry, rw, rh):
+                continue
         gdt_results.append(
             {
                 "class_name": gdt.get("class", gdt.get("class_name", "Unknown")),
                 "confidence": float(gdt.get("score", gdt.get("confidence", 0.0))),
-                "box": [
-                    [scaled[0], scaled[1]],
-                    [scaled[2], scaled[1]],
-                    [scaled[2], scaled[3]],
-                    [scaled[0], scaled[3]],
-                ],
+                "box": quad,
             }
         )
 
     logger.info(
-        "Autoballoon pipeline: %s dimension(s), %s text detection(s), %s GDT detection(s)",
+        "Autoballoon pipeline: %s dimension(s), %s text detection(s), %s GDT detection(s)%s",
         len(all_dimensions),
         len(text_results),
         len(gdt_results),
+        " [region]" if region_mode else " [full page]",
     )
 
     return {

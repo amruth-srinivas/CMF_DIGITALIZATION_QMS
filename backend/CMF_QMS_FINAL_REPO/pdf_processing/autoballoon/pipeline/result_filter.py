@@ -70,7 +70,9 @@ _ALL_GDT_CHARS = _GDT_SINGLE_CHARS | _GDT_MODIFIER_CHARS
 _FCF_SYMBOL_PART = (
     r"(?:"
     r"[⌖⌰⏊⫽↗⌢⏤⏥⌭◎⌿∠○⌓⊙⊕⊥∥⌯⌒]"  # Unicode GD&T symbols
-    r"|11\b"                           # ⏊ commonly OCR'd as "11"
+    # ⏊ is commonly OCR'd as "11". Require whitespace before the tolerance so
+    # linear dims like "11.5" / "11.50" are NOT treated as FCF ("11" + ".5").
+    r"|11(?=\s+\d)"
     r"|\/{1,2}"                        # / or // (parallelism, profile)
     r"|1\/"                            # 1/ partial
     r")"
@@ -155,6 +157,11 @@ class ResultFilter:
                 continue
 
             is_gdt = False
+
+            # Never promote bare linear numbers (e.g. "11.5") — the old FCF
+            # regex treated "11" + ".5" as perpendicularity OCR artefact.
+            if re.fullmatch(r"\d+\.?\d*", text_clean):
+                continue
 
             # Strategy A: single GD&T symbol character
             if len(text_clean) == 1 and text_clean in _ALL_GDT_CHARS:

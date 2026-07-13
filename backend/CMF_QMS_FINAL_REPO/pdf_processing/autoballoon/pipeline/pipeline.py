@@ -206,7 +206,11 @@ class OCRPipeline:
         vector_extracted = False
         if isinstance(image_input, str) and image_input.lower().endswith(".pdf"):
             vector_extracted = self._extract_vector_pdf(
-                image_input, page_index, gdt_detections, all_detections
+                image_input,
+                page_index,
+                gdt_detections,
+                all_detections,
+                clip_rect=(cx1, cy1, cx2, cy2),
             )
 
         if not vector_extracted:
@@ -561,24 +565,53 @@ class OCRPipeline:
                 # Skip things already handled in Stage 10c (Basic Dims, Datums, etc.)
                 if any(x in c_name for x in ["basic", "datum", "flag note"]):
                     continue
-                
-                # Extract the numeric tolerance value for the 'nominal' column
-                # e.g. "Position ⌖ 0.05 Ⓜ A B C" -> "0.05"
-                raw_text = gdt.get("class", "")
-                val_match = re.search(r'(\d+\.?\d*)', raw_text)
-                clean_nominal = val_match.group(1) if val_match else ""
-                
-                # Following user feedback: send the full class name (e.g. Perpendicularity)
-                # instead of just the symbol.
-                raw_full_class = gdt.get("class", "").split()
-                class_name = raw_full_class[0].capitalize() if raw_full_class else "FCF"
-                fcf_type = f"GDT-{class_name}"
 
+                raw_text = (gdt.get("class") or "").strip()
                 bx1, by1, bx2, by2 = gdt["bbox"]
                 bcx, bcy = (bx1 + bx2) / 2, (by1 + by2) / 2
                 zone_label = None
                 if zone_info is not None:
                     zone_label = zone_info.get_zone_label(bcx, bcy)
+
+                # Pure numeric "FCFs" are false promotions of linear dims (e.g. "11.5").
+                # Emit them as Linear instead of GDT-11.5.
+                if re.fullmatch(r"\d+\.?\d*", raw_text):
+                    parsed = DimParser.parse(raw_text)
+                    if not parsed.get("is_dim"):
+                        continue
+                    fcf_to_add.append({
+                        "bbox": gdt["bbox"],
+                        "score": gdt.get("score", 1.0),
+                        "text": raw_text,
+                        "source": "ocr",
+                        "parsed": parsed,
+                        "zone": zone_label,
+                    })
+                    continue
+
+                # Extract the numeric tolerance value for the 'nominal' column
+                # e.g. "Position ⌖ 0.05 Ⓜ A B C" -> "0.05"
+                val_match = re.search(r'(\d+\.?\d*)', raw_text)
+                clean_nominal = val_match.group(1) if val_match else ""
+
+                # Following user feedback: send the full class name (e.g. Perpendicularity)
+                # instead of just the symbol.
+                raw_full_class = raw_text.split()
+                class_name = raw_full_class[0].capitalize() if raw_full_class else "FCF"
+                # Never emit GDT-<number> (numeric first token = linear, not a GDT class)
+                if re.fullmatch(r"\d+\.?\d*", class_name):
+                    parsed = DimParser.parse(raw_text)
+                    if parsed.get("is_dim"):
+                        fcf_to_add.append({
+                            "bbox": gdt["bbox"],
+                            "score": gdt.get("score", 1.0),
+                            "text": raw_text,
+                            "source": "ocr",
+                            "parsed": parsed,
+                            "zone": zone_label,
+                        })
+                    continue
+                fcf_type = f"GDT-{class_name}"
 
                 fcf_to_add.append({
                     "bbox": gdt["bbox"],
@@ -624,13 +657,15 @@ class OCRPipeline:
         page_index: int,
         gdt_detections: list,
         out_detections: list,
+        clip_rect=None,
     ) -> bool:
         """
         Extract text from a vector (non-rasterised) PDF page using PyMuPDF.
 
         Coordinates are returned in global image space (250 DPI equivalent).
-        GD&T regions are excluded using GLOBAL coordinates (after Stage 3
-        has translated GD&T bboxes to global space).
+        When clip_rect=(x1,y1,x2,y2) is set (user selection / ROI crop), only
+        text whose center falls inside that rect is extracted — avoids scanning
+        the entire page for region-mode process-dimensions.
 
         :return: True if text was successfully extracted.
         """
@@ -638,7 +673,15 @@ class OCRPipeline:
             import fitz
             doc  = fitz.open(pdf_path)
             page = doc[page_index]
-            text_dict = page.get_text("dict")
+            # Clip in PDF points (72 DPI) when a pixel crop is provided
+            clip_fitz = None
+            if clip_rect is not None:
+                px1, py1, px2, py2 = clip_rect
+                inv = 72.0 / 250.0
+                clip_fitz = fitz.Rect(px1 * inv, py1 * inv, px2 * inv, py2 * inv)
+                text_dict = page.get_text("dict", clip=clip_fitz)
+            else:
+                text_dict = page.get_text("dict")
             doc.close()
 
             if not text_dict or "blocks" not in text_dict:
@@ -647,14 +690,9 @@ class OCRPipeline:
             # fitz uses 72 DPI; image_loader uses dpi=250
             scale = 250.0 / 72.0
 
-            # Build a set of GD&T regions in global image space for fast lookup.
             # At this point gdt_detections still hold crop-relative coords
             # (global translation hasn't happened yet when this is called from run()).
-            # However, _extract_vector_pdf is called BEFORE Stage "Translate GD&T",
-            # so we must NOT use gdt_detections for masking here — they're crop-relative.
-            # We simply skip masking and let the grouper handle it.
-            # (This is safe: vector PDFs have exact coords so GD&T won't be
-            #  duplicated — the grouper will absorb the compartment text.)
+            # Skip GDT masking here; the grouper absorbs compartment text.
 
             count = 0
             for block in text_dict.get("blocks", []):
@@ -671,6 +709,14 @@ class OCRPipeline:
                     x0, y0 = lx0 * scale, ly0 * scale
                     x1, y1 = lx1 * scale, ly1 * scale
 
+                    # Defense-in-depth: drop anything whose center is outside the crop
+                    if clip_rect is not None:
+                        cx = (x0 + x1) / 2.0
+                        cy = (y0 + y1) / 2.0
+                        qx1, qy1, qx2, qy2 = clip_rect
+                        if not (qx1 <= cx <= qx2 and qy1 <= cy <= qy2):
+                            continue
+
                     # Extract orientation from PyMuPDF 'dir' (cos, sin)
                     # Coordinates in PDF: (1, 0) is horizontal, (0, -1) is vertical up
                     ldir = line.get("dir", (1, 0))
@@ -684,7 +730,8 @@ class OCRPipeline:
                     out_detections.append([box, (text, 1.0, angle)])
                     count += 1
 
-            print(f"  Vector PDF: extracted {count} text lines (bypassed OCR).")
+            scope = f"clip={clip_rect}" if clip_rect is not None else "full page"
+            print(f"  Vector PDF: extracted {count} text lines ({scope}, bypassed OCR).")
             return count > 0
 
         except Exception as e:
