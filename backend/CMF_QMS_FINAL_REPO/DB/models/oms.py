@@ -274,7 +274,8 @@ class Operation(Base):
 
     setup_time = Column(TIME)
 
-    cycle_time = Column(TIME)
+    # varchar in the database; values are durations and may exceed 24 hours
+    cycle_time = Column(String)
 
     workcenter_id = Column(Integer)
 

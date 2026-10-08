@@ -155,7 +155,8 @@ class OperationBase(BaseModel):
     from_date: Optional[datetime] = None
     to_date: Optional[datetime] = None
     setup_time: Optional[time] = None
-    cycle_time: Optional[time] = None
+    # Duration stored as text (can exceed 24h, e.g. "30:20:00"), not a clock time.
+    cycle_time: Optional[str] = None
     workcenter_id: Optional[int] = None
     machine_id: Optional[int] = None
     part_id: int
@@ -163,7 +164,21 @@ class OperationBase(BaseModel):
     work_instructions: Optional[str] = None
     notes: Optional[str] = None
 
-    @field_validator('setup_time', 'cycle_time', mode='before')
+    @field_validator('cycle_time', mode='before')
+    @classmethod
+    def parse_cycle_time(cls, v):
+        if v is None:
+            return None
+        if isinstance(v, time):
+            return v.strftime("%H:%M:%S")
+        if isinstance(v, datetime):
+            return v.time().strftime("%H:%M:%S")
+        if isinstance(v, str):
+            text = v.strip()
+            return text or None
+        return str(v)
+
+    @field_validator('setup_time', mode='before')
     @classmethod
     def parse_time(cls, v):
         if v is None:
@@ -205,7 +220,7 @@ class OperationUpdate(BaseModel):
     from_date: Optional[datetime] = None
     to_date: Optional[datetime] = None
     setup_time: Optional[time] = None
-    cycle_time: Optional[time] = None
+    cycle_time: Optional[str] = None
     workcenter_id: Optional[int] = None
     machine_id: Optional[int] = None
     part_id: Optional[int] = None
@@ -213,7 +228,21 @@ class OperationUpdate(BaseModel):
     work_instructions: Optional[str] = None
     notes: Optional[str] = None
 
-    @field_validator('setup_time', 'cycle_time', mode='before')
+    @field_validator('cycle_time', mode='before')
+    @classmethod
+    def parse_cycle_time(cls, v):
+        if v is None:
+            return None
+        if isinstance(v, time):
+            return v.strftime("%H:%M:%S")
+        if isinstance(v, datetime):
+            return v.time().strftime("%H:%M:%S")
+        if isinstance(v, str):
+            text = v.strip()
+            return text or None
+        return str(v)
+
+    @field_validator('setup_time', mode='before')
     @classmethod
     def parse_time(cls, v):
         if v is None:
@@ -696,6 +725,8 @@ class DocumentExtractedDataUpdate(BaseModel):
 
 
 class DocumentExtractedData(DocumentExtractedDataBase):
+    # Some saved rows have no linked document; hierarchy must still load.
+    document_id: Optional[int] = None
     id: int
     created_at: Optional[datetime] = None
 
